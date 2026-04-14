@@ -1,21 +1,34 @@
+mod models; // Links your new models.rs file to the project
+
+use models::{OllamaOptions, OllamaRequest, OllamaResponse};
 use std::process::Command;
 
 fn main() {
-    println!("Generating commit");
+    println!("Generating_____________");
+
     let diff = match git_diff() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("Error getting diff: {e}");
+            eprintln!("Error getting diff: {}", e);
             return;
         }
     };
+
+    // Quick safety check so we don't send an empty prompt to the AI
+    if diff.trim().is_empty() {
+        eprintln!("No staged changes found. Did you forget to 'git add'?");
+        return;
+    }
+
     let commit_message = match get_commit_from_ai(diff) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Error generating commit: {e}");
+            eprintln!("Error generating commit: {}", e);
             return;
         }
     };
+
+    println!("{}", commit_message);
     commit(commit_message);
 }
 
@@ -28,28 +41,51 @@ fn git_diff() -> Result<String, String> {
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
-        Err(String::from("Error or no changes"))
+        Err(String::from("Git returned an error code or no changes"))
     }
 }
 
 fn get_commit_from_ai(diff: String) -> Result<String, String> {
     let prompt = format!(
-        "Output ONLY the commit message in Conventional Commits format (e.g., 'feat: add logic' or 'fix: resolve bug'). \
-    No explanations, no 'Thinking...', no markdown. Just the message for this diff: {}",
+        "Create a commit message. Output ONLY the commit message in Conventional Commits format (e.g., 'feat: add logic'). \
+        No explanations, no thinking, no markdown. Diff: {}",
         diff
     );
 
-    let output = Command::new("ollama")
-        .args(["run", "gemma4:e2b", &prompt])
+    let request_data = OllamaRequest {
+        model: String::from("gemma4:e4b"),
+        prompt,
+        stream: false,
+        keep_alive: 0, // Dumps the 9.6GB model immediately
+        options: OllamaOptions { temperature: 0.0 }, // Zero creativity
+    };
+
+    let payload = match serde_json::to_string(&request_data) {
+        Ok(json) => json,
+        Err(_) => return Err(String::from("Failed to serialize request")),
+    };
+
+    let output = Command::new("curl")
+        .args([
+            "-s", // Silent mode
+            "-X",
+            "POST",
+            "http://localhost:11434/api/generate",
+            "-d",
+            &payload,
+        ])
         .output()
-        .expect("Failed to execute ollama command");
+        .expect("Failed to execute curl command");
 
     if output.status.success() {
-        // Wrap the successful string in Ok()
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        let raw_json = String::from_utf8_lossy(&output.stdout);
+
+        match serde_json::from_str::<OllamaResponse>(&raw_json) {
+            Ok(parsed) => Ok(parsed.response.trim().to_string()),
+            Err(_) => Err(String::from("Failed to parse Ollama JSON response")),
+        }
     } else {
-        // Wrap the failure message in Err()
-        Err(String::from("Ollama returned an error code"))
+        Err(String::from("Ollama API call failed"))
     }
 }
 
@@ -60,6 +96,12 @@ fn commit(commit_message: String) {
         .expect("Failed to execute commit command");
 
     if output.status.success() {
-        println!("{}", commit_message);
+        println!("_____________________");
+    } else {
+        // If git fails (e.g., pre-commit hooks block it), print the error
+        eprintln!(
+            "Git commit failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
