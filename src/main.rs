@@ -4,7 +4,7 @@ use models::{OllamaOptions, OllamaRequest, OllamaResponse};
 use std::process::Command;
 
 fn main() {
-    println!("Generating_____________");
+    println!("Generating...");
 
     let diff = match git_diff() {
         Ok(d) => d,
